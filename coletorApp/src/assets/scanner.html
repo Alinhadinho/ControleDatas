@@ -1,102 +1,149 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html lang="pt-BR">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Leitor de Código</title>
-    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
-    <style>
-        body, html { margin: 0; padding: 0; overflow: hidden; background-color: #000; }
-        #video-container { position: relative; width: 100vw; height: 100vh; }
-        video { width: 100%; height: 100%; object-fit: cover; }
-        #feedback-box {
-            position: absolute;
-            left: 50%;
-            top: 50%;
-            transform: translate(-50%, -50%);
-            width: 80%;
-            height: 30%;
-            border: 2px solid rgba(255, 0, 0, 0.7);
-            box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
-        }
-        canvas { display: none; } /* O canvas é usado para processamento, não precisa ser visível */
-    </style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no" />
+  <title>Scanner</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; margin:0; padding:0; display:flex; flex-direction:column; height:100vh; }
+    header { background:#0A2E73;color:white;padding:12px; display:flex; align-items:center; gap:12px; }
+    #content { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:12px; }
+    #reader { width:100%; max-width:640px; height:60vh; border-radius:8px; overflow:hidden; background:#000; }
+    .row { display:flex; gap:8px; margin-top:12px; }
+    button { padding:8px 12px; border-radius:6px; border:none; background:#0A2E73; color:white; cursor:pointer; }
+    button.secondary { background:#666; }
+    #msg { margin-top:8px; color:#444; }
+  </style>
+  <!-- html5-qrcode CDN -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.7/minified/html5-qrcode.min.js"></script>
 </head>
 <body>
-    <div id="video-container">
-        <video id="video" playsinline autoplay muted></video>
-        <div id="feedback-box"></div>
-        <canvas id="canvas"></canvas>
+  <header>
+    <button id="backBtn">◀ Voltar</button>
+    <h3 style="margin:0">Aponte para o código</h3>
+  </header>
+
+  <div id="content">
+    <div id="reader"></div>
+
+    <div class="row">
+      <button id="startBtn">Iniciar Scanner</button>
+      <button id="stopBtn" class="secondary" disabled>Parar</button>
+      <button id="cameraSelectBtn" class="secondary">Trocar Câmera</button>
     </div>
 
-    <script>
-        const video = document.getElementById("video");
-        const canvasElement = document.getElementById("canvas");
-        const canvas = canvasElement.getContext("2d");
-        let stream;
+    <div id="msg">Aguardando início. Permita o uso da câmera quando solicitado.</div>
+  </div>
 
-        // Função para iniciar a câmera
-        async function startCamera() {
-            try {
-                // Pede acesso à câmera traseira (environment)
-                stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: "environment" }
-                });
-                video.srcObject = stream;
-                video.onloadedmetadata = () => {
-                    canvasElement.width = video.videoWidth;
-                    canvasElement.height = video.videoHeight;
-                    video.play();
-                    // Inicia o loop de leitura
-                    requestAnimationFrame(tick);
-                };
-            } catch (err) {
-                console.error("Erro ao acessar a câmera:", err);
-                if (window.flet) {
-                    // Envia uma mensagem de erro de volta para o Flet
-                    window.flet.sendMessage("CAMERA_ERROR");
-                }
-            }
+  <script>
+    // utilitário para enviar mensagens ao pai (Flet WebView)
+    function sendToFlet(payload) {
+      try {
+        // window.parent é o host que abriu a WebView no Flet
+        window.parent.postMessage(payload, "*");
+      } catch (e) {
+        console.error("Erro ao enviar mensagem:", e);
+      }
+    }
+
+    const readerDivId = "reader";
+    let html5QrcodeScanner = null;
+    let currentCameraId = null;
+    let cameras = [];
+
+    async function listCameras() {
+      try {
+        const devices = await Html5Qrcode.getCameras();
+        cameras = devices || [];
+        return cameras;
+      } catch (err) {
+        console.warn("Erro ao listar câmeras:", err);
+        return [];
+      }
+    }
+
+    async function startScanner(cameraId) {
+      if (html5QrcodeScanner) return;
+      const config = { fps: 10, qrbox: { width: 300, height: 200 }, rememberLastUsedCamera: true };
+
+      html5QrcodeScanner = new Html5Qrcode(readerDivId, /* verbose= */ false);
+      try {
+        await html5QrcodeScanner.start(
+          cameraId ? { deviceId: { exact: cameraId } } : { facingMode: "environment" },
+          config,
+          (decodedText, decodedResult) => {
+            // decodedText é o valor lido
+            document.getElementById("msg").innerText = "Código lido: " + decodedText;
+            // envia para o Flet (o app principal)
+            sendToFlet(decodedText);
+            // opcional: parar scanner após leitura
+            // stopScanner();
+          },
+          (errorMessage) => {
+            // console.debug("Scan error:", errorMessage);
+          }
+        );
+        document.getElementById("msg").innerText = "Scanner ativo. Aponte para o código.";
+        document.getElementById("startBtn").disabled = true;
+        document.getElementById("stopBtn").disabled = false;
+      } catch (e) {
+        document.getElementById("msg").innerText = "Erro ao iniciar a câmera: " + e.message;
+        console.error(e);
+      }
+    }
+
+    async function stopScanner() {
+      if (!html5QrcodeScanner) return;
+      try {
+        await html5QrcodeScanner.stop();
+        await html5QrcodeScanner.clear();
+      } catch (e) {
+        console.warn("Erro ao parar scanner:", e);
+      }
+      html5QrcodeScanner = null;
+      document.getElementById("msg").innerText = "Scanner parado.";
+      document.getElementById("startBtn").disabled = false;
+      document.getElementById("stopBtn").disabled = true;
+    }
+
+    // Inicial
+    (async () => {
+      // Botões
+      document.getElementById("startBtn").addEventListener("click", async () => {
+        // iOS exige uma interação do usuário para iniciar getUserMedia, por isso botão
+        if (cameras.length === 0) await listCameras();
+        currentCameraId = (cameras[0] && cameras[0].id) || null;
+        await startScanner(currentCameraId);
+      });
+
+      document.getElementById("stopBtn").addEventListener("click", stopScanner);
+
+      document.getElementById("cameraSelectBtn").addEventListener("click", async () => {
+        if (cameras.length === 0) await listCameras();
+        if (cameras.length <= 1) {
+          alert("Nenhuma outra câmera detectada.");
+          return;
         }
+        // encontra índice e troca
+        const idx = cameras.findIndex(c => c.id === currentCameraId);
+        const next = (idx + 1) % cameras.length;
+        currentCameraId = cameras[next].id;
+        await stopScanner();
+        await startScanner(currentCameraId);
+      });
 
-        // Loop de leitura frame a frame
-        function tick() {
-            if (video.readyState === video.HAVE_ENOUGH_DATA) {
-                // Desenha o frame do vídeo no canvas
-                canvas.drawImage(video, 0, 0, canvasElement.width, canvasElement.height);
-                // Extrai os dados da imagem do canvas
-                const imageData = canvas.getImageData(0, 0, canvasElement.width, canvasElement.height);
-                // Tenta decodificar o código usando jsQR
-                const code = jsQR(imageData.data, imageData.width, imageData.height, {
-                    inversionAttempts: "dontInvert",
-                });
+      document.getElementById("backBtn").addEventListener("click", () => {
+        sendToFlet("CANCEL_SCAN");
+      });
 
-                if (code) {
-                    // CÓDIGO ENCONTRADO!
-                    console.log("Código encontrado:", code.data);
-                    
-                    // Envia o código para o Flet
-                    if (window.flet) {
-                        window.flet.sendMessage(code.data);
-                    }
-                    
-                    // Para a câmera para economizar bateria
-                    stopCamera();
-                    return; // Sai do loop
-                }
-            }
-            // Continua o loop
-            requestAnimationFrame(tick);
-        }
+      // tenta listar câmeras já
+      await listCameras();
+    })();
 
-        function stopCamera() {
-            if (stream) {
-                stream.getTracks().forEach(track => track.stop());
-            }
-        }
-
-        // Inicia todo o processo
-        startCamera();
-    </script>
+    // Optional: receber mensagens do Flet (se necessário)
+    window.addEventListener("message", (ev) => {
+      // console.log("Mensagem do Flet:", ev.data);
+    });
+  </script>
 </body>
 </html>
