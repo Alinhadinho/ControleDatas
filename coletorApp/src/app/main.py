@@ -1,6 +1,7 @@
 import flet as ft
 import datetime
 import os
+import json
 from sqlalchemy.orm import joinedload
 from .models import Produto, Pasta, SessionLocal, init_db
 from .ExcelScript import adicionar_e_formatar_produtos
@@ -47,29 +48,48 @@ def main(page: ft.Page):
     # --- LÓGICA DO SCANNER MULTIPLATAFORMA ---
 
     # Função para o scanner WebView (Mobile)
-    def show_webview_scanner():
+    def show_webview_scanner(pasta_id_forced=None):
         """Exibe o leitor de código usando scanner.html dentro de um WebView."""
 
         def handle_message(e):
             code = e.data
-            if code == "CAMERA_ERROR":
-                page.snack_bar = ft.SnackBar(ft.Text("Erro ao acessar a câmera. Verifique as permissões."), bgcolor=ft.Colors.RED_400)
-            elif code:
-                page.snack_bar = ft.SnackBar(ft.Text(f"Código lido: {code}"), bgcolor=ft.Colors.GREEN_400)
-                # You can now automatically process the code
-                # For example, find the product and open the edit screen.
             
-            page.snack_bar.open = True
+            if code == "CANCEL_SCAN":
+                voltar_para_meus_produtos()
+                page.update()
+                return
+
+            if code and code.startswith("CAMERA_ERROR"):
+                page.snack_bar = ft.SnackBar(ft.Text("Erro ao acessar a câmera. Verifique as permissões."), bgcolor=ft.Colors.RED_400)
+                page.snack_bar.open = True
+                voltar_para_meus_produtos()
+                page.update()
+                return
+
+            if code:
+                page.snack_bar = ft.SnackBar(ft.Text(f"Código lido: {code}"), bgcolor=ft.Colors.GREEN_400)
+                page.snack_bar.open = True
+                
+                valor = code.strip()
+                tipo = "EAN" if valor.isdigit() and len(valor) == 13 else "PLU" if valor.isdigit() and len(valor) == 5 else None
+                
+                if not tipo:
+                    page.snack_bar = ft.SnackBar(ft.Text(f"Código inválido: {valor}"), bgcolor=CORES["danger"])
+                    page.snack_bar.open = True
+                    voltar_para_meus_produtos()
+                else:
+                    pasta_id_final = pasta_id_forced if pasta_id_forced is not None else active_folder_id['value']
+                    criar_novo_registro(tipo, valor, pasta_id_forced=pasta_id_final)
+                
+                page.update()
+                return 
+
             voltar_para_meus_produtos()
             page.update()
 
-        # 🔹 CORREÇÃO APLICADA AQUI 🔹
-        # Flet's asset server makes the file available at the root URL.
-        # No complex path calculation is needed.
-        webview_control = WebView(url="/scanner.html") # The URL is now simple and reliable
+        webview_control = WebView(url="/scanner.html") 
         webview_control.on_message = handle_message
 
-        # Monta o layout
         scanner_view = ft.Container(
             expand=True,
             content=ft.Column([
@@ -89,16 +109,26 @@ def main(page: ft.Page):
             ], spacing=0)
         )
 
-        # Ajusta a interface do app
         page.appbar.visible = False
         page.bottom_appbar.visible = False
         page.floating_action_button.visible = False
         main_content.content = scanner_view
         page.update()
 
-
-    # Função para o scanner OpenCV (Desktop) - Restaurada do seu código original
+    # Função para o scanner OpenCV (Desktop)
     def show_opencv_scanner(pasta_id_forced=None):
+        
+        scanner_cv = None
+        try:
+            # Tenta inicializar o detector de código de barras
+            scanner_cv = cv2.barcode.BarcodeDetector()
+        except Exception as e:
+            print(f"Erro ao inicializar BarcodeDetector: {e}. Verifique se 'opencv-contrib-python' está instalado.")
+            page.snack_bar = ft.SnackBar(ft.Text("Erro no scanner. Verifique o console."), bgcolor=CORES["danger"])
+            page.snack_bar.open = True
+            page.update()
+            return # Não continua se o scanner falhar
+            
         def run_scanner_and_get_code():
             cap = cv2.VideoCapture(0)
             if not cap.isOpened():
@@ -110,7 +140,10 @@ def main(page: ft.Page):
             while True:
                 ret, frame = cap.read()
                 if not ret: break
-                ok, decoded_info, _, _ = scanner.detectAndDecodeMulti(frame)
+                
+                # Usa a instância 'scanner_cv' criada fora
+                ok, decoded_info, _, _ = scanner_cv.detectAndDecodeMulti(frame)
+                
                 if ok and decoded_info and decoded_info[0]:
                     data_found = decoded_info[0]
                     break
@@ -126,7 +159,10 @@ def main(page: ft.Page):
                 codigo_field.value = codigo_lido
                 page.snack_bar = ft.SnackBar(ft.Text(f"Código capturado: {codigo_lido}"))
                 page.snack_bar.open = True
-                page.update()
+            else:
+                page.snack_bar = ft.SnackBar(ft.Text("Nenhum código capturado."), bgcolor=CORES["danger"])
+                page.snack_bar.open = True
+            page.update()
 
         def confirmar_codigo_manual(ev):
             valor = codigo_field.value.strip() if codigo_field.value else ""
@@ -377,6 +413,7 @@ def main(page: ft.Page):
         dlg = ft.AlertDialog(modal=True, title=ft.Text("Confirmar Deleção"), content=ft.Text(f"Deletar {len(selected_products)} produtos?"), actions=[ft.TextButton("Cancelar", on_click=lambda _: page.close(dlg)), ft.TextButton("Deletar", on_click=confirmar_delecao, style=ft.ButtonStyle(color=CORES["danger"]))])
         page.open(dlg)
     
+    # *** FUNÇÃO CORRIGIDA ***
     def exportar_xlsx(ev):
         items = get_products_from_selection()
         if not items: 
@@ -385,21 +422,57 @@ def main(page: ft.Page):
         try:
             os.makedirs(REPORTS_DIR, exist_ok=True)
             produtos_lista = [{"nome": p.nome or "", "EAN": p.ean or "N/A", "PLU": p.plu or "N/A", "quantidade": p.quantidade or 0, "validade": p.data_validade or "01/01/1900"} for p in items]
-            caminho_salvo = adicionar_e_formatar_produtos(TEMPLATE_PATH, produtos_lista, "Planilha1", REPORTS_DIR) 
             
+            # 1. Gera o arquivo
+            caminho_salvo = adicionar_e_formatar_produtos(TEMPLATE_PATH, produtos_lista, "Planilha1", REPORTS_DIR) 
+            nome_arquivo = os.path.basename(caminho_salvo)
+            
+            # 2. Cria a URL de download
+            url_download = f"/reports/{nome_arquivo}" 
+
+            # 3. Executa JS com o 'f' string corrigido
+            # Apenas chaves de *objetos literais* JS são duplicadas ({{...}})
+            # Chaves de blocos de função (if, else, .then, .catch) são únicas ({...})
+            share_xlsx_script = f"""
+            const file_url = "{url_download}";
+            const file_name = "{nome_arquivo}";
+
+            if (navigator.share) {{
+                // API de compartilhamento (Mobile)
+                fetch(file_url)
+                    .then(resp => resp.blob())
+                    .then(blob => {{
+                        const file = new File([blob], file_name, {{ type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }});
+                        navigator.share({{ files: [file], title: "Relatório de Inventário" }})
+                            .catch(err => {{
+                                console.log('Compartilhamento cancelado:', err);
+                                window.open(file_url, "_blank");
+                            }});
+                    }})
+                    .catch(err => {{
+                        console.error('Erro ao buscar arquivo:', err);
+                        window.open(file_url, "_blank");
+                    }});
+            }} else {{
+                // Fallback para download direto (Desktop)
+                window.open(file_url, "_blank");
+            }}
+            """
+            page.js_eval(share_xlsx_script)
+
             if selected_products or selected_folders: 
                 clear_selection()
             
-            page.snack_bar = ft.SnackBar(ft.Text(f"Exportação concluída! Salvo em: {os.path.basename(caminho_salvo)}")); page.snack_bar.open = True; page.update()
+            page.snack_bar = ft.SnackBar(ft.Text(f"Gerando relatório: {nome_arquivo}")); page.snack_bar.open = True; page.update()
+        
         except Exception as e: 
             page.snack_bar = ft.SnackBar(ft.Text(f"Erro ao exportar: {e}"), bgcolor=ft.Colors.RED_400); page.snack_bar.open = True; page.update()
-    
+        
     def voltar_para_meus_produtos():
         page.appbar.visible = True
         page.bottom_appbar.visible = True
         page.floating_action_button.visible = True
         
-        # Simplesmente volta para a view correta, a navegação principal cuida do resto
         if current_view_context['value'] == 'pastas':
             show_pastas(None)
         elif current_view_context['value'] == 'compartilhados':
@@ -527,14 +600,59 @@ def main(page: ft.Page):
             local_db.close(); return produtos
         else: return get_visible_products() 
 
+    # *** FUNÇÃO CORRIGIDA ***
     def compartilhar_texto(ev):
         items = get_products_from_selection()
-        if not items: page.snack_bar = ft.SnackBar(ft.Text("Nenhum item para compartilhar")); page.snack_bar.open = True; page.update(); return
+        if not items: 
+            page.snack_bar = ft.SnackBar(ft.Text("Nenhum item para compartilhar")); page.snack_bar.open = True; page.update(); return
+        
+        # 1. Monta o texto
         lines = [f"--- Lista de Produtos ({len(items)} itens) ---"]
-        for p in items: lines.extend([f"\n{p.nome}", f"  * EAN: {p.ean or 'N/A'}", f"  * PLU: {p.plu or 'N/A'}", f"  * Quantidade: {p.quantidade}", f"  * Validade: {p.data_validade or 'N/A'}", f"  * Pasta: {p.pasta.nome if p.pasta else 'N/A'}"])
-        page.set_clipboard("\n".join(lines))
-        page.snack_bar = ft.SnackBar(ft.Text(f"Lista de {len(items)} itens copiada!")); page.snack_bar.open = True
-        if selected_products or selected_folders: clear_selection()
+        for p in items: 
+            lines.extend([
+                f"\n{p.nome}", 
+                f"  * EAN: {p.ean or 'N/A'}", 
+                f"  * PLU: {p.plu or 'N/A'}", 
+                f"  * Quantidade: {p.quantidade}", 
+                f"  * Validade: {p.data_validade or 'N/A'}", 
+                f"  * Pasta: {p.pasta.nome if p.pasta else 'N/A'}"
+            ])
+        texto = "\n".join(lines)
+        
+        # 2. Prepara o texto para JS
+        texto_js = json.dumps(texto) # Converte o texto Python para uma string JS segura
+        # {texto_codificado_url} é usado dentro de um f-string, então está correto
+        texto_codificado_url = texto.replace(" ", "%20").replace("\n", "%0A")
+
+        # 3. Executa JS com o 'f' string corrigido
+        # Apenas chaves de *objetos literais* JS são duplicadas ({{...}})
+        # Chaves de blocos de função (if, else, try, catch) são únicas ({...})
+        share_script = f"""
+        const text_to_share = {texto_js};
+        if (navigator.share) {{
+            // API de Compartilhamento (Mobile)
+            navigator.share({{ text: text_to_share }})
+                .catch(err => console.log('Compartilhamento cancelado:', err));
+        }} else {{
+            // Fallback (Desktop) - Tenta copiar para clipboard
+            try {{
+                navigator.clipboard.writeText(text_to_share);
+                // Idealmente, enviaríamos um snackbar de "Copiado!" aqui
+            }} catch (err) {{
+                // Fallback final: Abrir WhatsApp Web
+                console.error('Falha ao compartilhar ou copiar, abrindo WhatsApp:', err);
+                window.open("https://wa.me/?text={texto_codificado_url}", "_blank");
+            }}
+        }}
+        """
+        page.js_eval(share_script)
+
+        # 4. Feedback
+        page.snack_bar = ft.SnackBar(ft.Text(f"Abrindo menu para compartilhar {len(items)} itens..."))
+        page.snack_bar.open = True
+        
+        if selected_products or selected_folders: 
+            clear_selection()
         page.update()
         
     def set_sort_order(order: str):
