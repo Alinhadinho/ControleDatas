@@ -1,6 +1,6 @@
 # 1️⃣ Base
 FROM python:3.11-slim
-LABEL build_version="1.0.3-final-asgi-fix"
+LABEL build_version="1.0.4-opencv-fix"
 
 # 2️⃣ Configurações básicas
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -9,18 +9,24 @@ ENV FLET_DISPLAY=false
 ENV APP_HOME=/app
 WORKDIR $APP_HOME
 
-# 3️⃣ Copiar o código
+# 3️⃣ Instalar dependências do sistema necessárias pro OpenCV
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 4️⃣ Copiar o código e dependências
 COPY ./src ./src
 COPY requirements.txt ./
 
-# 4️⃣ Instalar dependências
+# 5️⃣ Instalar pacotes Python
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 5️⃣ Criar pastas de dados
+# 6️⃣ Criar pastas
 RUN mkdir -p data reports
 
-# 6️⃣ Expor porta (Render usa variáveis de ambiente)
+# 7️⃣ Expor porta
 EXPOSE 8080
 
-# 7️⃣ Comando para iniciar o app
+# 8️⃣ Rodar o app Flet
 CMD ["python", "src/main.py"]
