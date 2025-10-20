@@ -1,0 +1,41 @@
+# ==========================================
+# 🧱 Render.com Blueprint - Coletor App
+# Projeto: ControleDatas / coletorApp
+# Tipo: Aplicação Flet com Docker
+# Persistência: Banco + Relatórios
+# ==========================================
+
+services:
+  - type: web
+    name: coletor-app
+    env: docker
+    region: oregon  # altere para 'frankfurt' se quiser servidor europeu
+
+    # Caminhos relativos à raiz do repositório
+    dockerfilePath: ./coletorApp/Dockerfile
+    dockerContext: ./coletorApp
+
+    # Variáveis de ambiente (Render define PORT automaticamente)
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: FLET_DISPLAY
+        value: false
+
+    # Caminho de health check (opcional, se adicionado no main.py)
+    healthCheckPath: /healthz
+
+    # Persistência de dados (mantém o DB e relatórios entre deploys)
+    disks:
+      - name: coletor-data
+        mountPath: /app/data
+        sizeGB: 1
+      - name: coletor-reports
+        mountPath: /app/reports
+        sizeGB: 1
+
+    # Deploy automático a cada commit
+    autoDeploy: true
+
+    # Plano gratuito (altere para 'starter' se precisar de mais CPU/RAM)
+    plan: free
