@@ -1,19 +1,43 @@
-name: My Workflow
-on: [push]
+name: CI de Python
 
-# ✅ CORRECT: 'jobs:' is the required top-level key
+# 1. Quando rodar o workflow
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+# 2. O que fazer
 jobs:
-  my_job_name: # You define one or more jobs here
+  build-and-lint:
     runs-on: ubuntu-latest
     
-    # ✅ CORRECT: 'services:' is now *inside* the job
-    services:
-      my-service:
-        image: my-image:latest
-        ports:
-          - 5432:5432
+    # Define o diretório de trabalho, já que seu código está na pasta "coletorApp"
+    defaults:
+      run:
+        working-directory: ./coletorApp
 
     steps:
-      - uses: actions/checkout@v4
-      - name: Run my build
-        run: echo "Connecting to my-service..."
+    # 3. Baixa o seu código do repositório
+    - name: Check out repository
+      uses: actions/checkout@v4
+
+    # 4. Configura o ambiente Python
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11' # Use a mesma versão do seu Dockerfile, se possível
+
+    # 5. Instala as dependências
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    # 6. Roda o Linter (Verificador de código)
+    - name: Lint with Flake8
+      run: |
+        pip install flake8
+        # Roda o flake8 no diretório atual (coletorApp)
+        # Ele falhará o build se encontrar erros de sintaxe ou formatação
+        flake8 . --count --show-source --statistics --max-line-length=88
