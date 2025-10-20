@@ -6,8 +6,8 @@
   <title>Scanner de Produtos</title>
 
   <style>
-    body {
-      font-family: Arial, sans-serif;
+    body, html {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       margin: 0;
       padding: 0;
       display: flex;
@@ -15,6 +15,7 @@
       background-color: #0A2E73;
       color: white;
       height: 100vh;
+      overflow: hidden;
     }
     header {
       padding: 12px;
@@ -46,7 +47,24 @@
       margin: 10px;
       border-radius: 10px;
       overflow: hidden;
+      position: relative;
     }
+    /* Linha de scan */
+    #reader::after {
+        content: '';
+        position: absolute;
+        width: 90%;
+        height: 2px;
+        background: red;
+        box-shadow: 0 0 10px red;
+        animation: scan 2s infinite linear;
+    }
+    @keyframes scan {
+        0% { top: 10%; }
+        50% { top: 90%; }
+        100% { top: 10%; }
+    }
+
     #msg {
       padding: 10px;
       text-align: center;
@@ -82,11 +100,16 @@
     const readerDivId = "reader";
     let scanner = null;
     let cameras = [];
-    let currentCam = null;
+    let currentCamId = null;
 
-    // envia resultado para o Flet (Python)
+    // *** MODIFICADO PARA USAR window.flet ***
+    // Envia resultado/comando para o Flet (Python)
     function sendToFlet(data) {
-      window.parent.postMessage(data, "*");
+      if (window.flet) {
+        window.flet.sendMessage(data);
+      } else {
+        console.error("Interface Flet (window.flet) não encontrada. Mensagem:", data);
+      }
     }
 
     async function listarCameras() {
@@ -94,40 +117,64 @@
         const devices = await Html5Qrcode.getCameras();
         cameras = devices || [];
         console.log("Câmeras detectadas:", cameras);
+        if (cameras.length > 0) {
+            // Tenta priorizar a câmera traseira ("environment")
+            const traseira = cameras.find(c => c.label.toLowerCase().includes('back') || c.label.toLowerCase().includes('traseira'));
+            currentCamId = (traseira || cameras[0]).id;
+        }
       } catch (err) {
         document.getElementById("msg").innerText = "Erro ao listar câmeras: " + err;
+        sendToFlet("CAMERA_ERROR: " + err.message); // Envia erro para o Flet
       }
     }
 
     async function iniciarScanner(cameraId) {
-      if (scanner) return;
-      const config = { fps: 10, qrbox: { width: 300, height: 200 }, rememberLastUsedCamera: true };
+      if (scanner && scanner.isScanning) return;
+      
+      const config = { 
+        fps: 10, 
+        qrbox: { width: 280, height: 180 }, 
+        rememberLastUsedCamera: true 
+      };
+      
       scanner = new Html5Qrcode(readerDivId);
+      
       try {
         await scanner.start(
           cameraId ? { deviceId: { exact: cameraId } } : { facingMode: "environment" },
           config,
           (decodedText, decodedResult) => {
+            // SUCESSO
             document.getElementById("msg").innerText = "Código: " + decodedText;
-            sendToFlet(decodedText);  // envia para o app Flet
+            sendToFlet(decodedText); // envia para o app Flet
+            pararScanner(); // Para o scanner após sucesso
+          },
+          (errorMessage) => {
+            // Erros parciais (ex: não achou código), ignorar
           }
         );
+        currentCamId = scanner.getState() === 2 ? scanner.getRunningTrackCameraCapabilities().deviceId : currentCamId;
         document.getElementById("msg").innerText = "Scanner ativo — aponte para o código.";
         document.getElementById("startBtn").disabled = true;
         document.getElementById("stopBtn").disabled = false;
       } catch (e) {
         document.getElementById("msg").innerText = "Erro ao iniciar: " + e.message;
+        sendToFlet("CAMERA_ERROR: " + e.message); // Envia erro para o Flet
       }
     }
 
     async function pararScanner() {
-      if (!scanner) return;
-      await scanner.stop();
-      await scanner.clear();
-      scanner = null;
-      document.getElementById("msg").innerText = "Scanner parado.";
-      document.getElementById("startBtn").disabled = false;
-      document.getElementById("stopBtn").disabled = true;
+      if (!scanner || !scanner.isScanning) return;
+      try {
+        await scanner.stop();
+        await scanner.clear();
+        scanner = null;
+        document.getElementById("msg").innerText = "Scanner parado.";
+        document.getElementById("startBtn").disabled = false;
+        document.getElementById("stopBtn").disabled = true;
+      } catch (e) {
+          console.error("Erro ao parar scanner:", e);
+      }
     }
 
     async function trocarCamera() {
@@ -135,24 +182,27 @@
         alert("Nenhuma outra câmera detectada.");
         return;
       }
-      const idx = cameras.findIndex(c => c.id === currentCam);
-      const next = (idx + 1) % cameras.length;
-      currentCam = cameras[next].id;
+      const idx = cameras.findIndex(c => c.id === currentCamId);
+      const nextIdx = (idx + 1) % cameras.length;
+      currentCamId = cameras[nextIdx].id;
+      
       await pararScanner();
-      await iniciarScanner(currentCam);
+      await iniciarScanner(currentCamId);
     }
 
-    // eventos de botão
+    // Eventos de botão
     document.getElementById("startBtn").addEventListener("click", async () => {
       if (cameras.length === 0) await listarCameras();
-      currentCam = (cameras[0] && cameras[0].id) || null;
-      iniciarScanner(currentCam);
+      iniciarScanner(currentCamId);
     });
     document.getElementById("stopBtn").addEventListener("click", pararScanner);
     document.getElementById("switchBtn").addEventListener("click", trocarCamera);
-    document.getElementById("backBtn").addEventListener("click", () => sendToFlet("CANCEL_SCAN"));
+    document.getElementById("backBtn").addEventListener("click", () => {
+        pararScanner();
+        sendToFlet("CANCEL_SCAN"); // Envia comando de cancelamento
+    });
 
-    // lista câmeras no carregamento
+    // Lista câmeras no carregamento para acelerar o "Iniciar"
     listarCameras();
   </script>
 </body>
